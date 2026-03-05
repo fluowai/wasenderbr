@@ -1,0 +1,7 @@
+{
+  "name": "Wasenderbr",
+  "description": "Ferramenta de captação de clientes no Google Maps e disparos de mensagens via WhatsApp com agentes de IA.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
