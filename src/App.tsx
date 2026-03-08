@@ -473,6 +473,8 @@ export default function App() {
     }
   };
 
+  const API_URL = import.meta.env.VITE_API_URL || '';
+
   const apiFetch = async (url: string, options: any = {}) => {
     if (!auth) return null;
     const headers = {
@@ -480,7 +482,9 @@ export default function App() {
       'x-account-id': auth.accountId.toString(),
       'Content-Type': 'application/json'
     };
-    const res = await fetch(url, { ...options, headers });
+    // Ensure absolute URL if API_URL is provided, otherwise relative
+    const finalUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
+    const res = await fetch(finalUrl, { ...options, headers });
     if (res.status === 401) {
       handleLogout();
       return null;
@@ -622,7 +626,7 @@ export default function App() {
       fetchInstances();
       fetchConversations();
 
-      const newSocket = io(window.location.origin, {
+      const newSocket = io(API_URL || window.location.origin, {
         query: { accountId: auth.accountId }
       });
 
@@ -923,7 +927,7 @@ export default function App() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('/api/upload', {
+      const response = await fetch(`${API_URL}/api/upload`, {
         method: 'POST',
         headers: { 'x-account-id': auth?.accountId?.toString() || '' },
         body: formData
