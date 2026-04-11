@@ -1,5 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { io, Socket } from "socket.io-client";
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer, 
+  LineChart, 
+  Line, 
+  PieChart, 
+  Pie, 
+  Cell,
+  Legend,
+  AreaChart,
+  Area
+} from 'recharts';
 import { 
   Search, 
   Users, 
@@ -22,12 +38,12 @@ import {
   Lock,
   Mail,
   User,
-  Smartphone,
+  TrendingUp,
+  MessageCircle,
   CheckCircle,
-  AlertCircle,
-  Paperclip,
-  Image as ImageIcon
+  BarChart3
 } from 'lucide-react';
+import { GoogleGenAI } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -47,43 +63,12 @@ interface Lead {
   kanban_status?: string;
 }
 
-interface Instance {
-  id: number;
-  name: string;
-  engine?: 'baileys' | 'whatsmeow';
-  status: 'none' | 'qr' | 'connecting' | 'open' | 'close' | 'reconnecting';
-  qr?: string;
-  phoneConnected?: string;
-}
-
-interface Conversation {
-  id: number;
-  instance_id: number;
-  title: string;
-  type: 'contact' | 'group';
-  contact_phone?: string;
-  group_jid?: string;
-  last_message?: string;
-  last_message_at: string;
-  unread_count: number;
-}
-
 interface Message {
   id: number;
-  conversation_id?: number;
-  lead_id?: number;
-  lead_name?: string;
-  direction?: 'inbound' | 'outbound';
-  chat_type?: 'contact' | 'group';
-  author_phone?: string;
-  author_push_name?: string;
-  sender?: 'ai' | 'human' | 'lead';
-  content?: string;
-  content_type?: 'text' | 'image' | 'video' | 'audio' | 'document';
-  content_text?: string;
-  message_id?: string;
-  delivery_status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed' | 'received';
-  from_me?: boolean;
+  lead_id: number;
+  lead_name: string;
+  sender: 'ai' | 'human' | 'lead';
+  content: string;
   created_at: string;
 }
 
@@ -132,23 +117,17 @@ interface Campaign {
 }
 
 interface WhatsAppStatus {
-  status: 'connecting' | 'open' | 'close' | 'qr' | 'none';
+  status: 'connecting' | 'open' | 'close' | 'none';
   qr: string | null;
 }
 
 // --- Components ---
 
-const SidebarItem = ({ icon: Icon, label, active, onClick, href }: { icon: any, label: string, active: boolean, onClick?: () => void, href?: string }) => (
-  <a
-    href={href || "#"}
-    onClick={(e) => {
-      if (onClick) {
-        e.preventDefault();
-        onClick();
-      }
-    }}
+const SidebarItem = ({ icon: Icon, label, active, onClick }: { icon: any, label: string, active: boolean, onClick: () => void }) => (
+  <button
+    onClick={onClick}
     className={cn(
-      "flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-all duration-200 cursor-pointer no-underline",
+      "flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-all duration-200",
       active 
         ? "bg-emerald-50 text-emerald-700 font-medium shadow-sm" 
         : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
@@ -156,7 +135,7 @@ const SidebarItem = ({ icon: Icon, label, active, onClick, href }: { icon: any, 
   >
     <Icon size={20} />
     <span className="text-sm">{label}</span>
-  </a>
+  </button>
 );
 
 const Card = ({ children, className }: { children: React.ReactNode, className?: string }) => (
@@ -401,25 +380,16 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'search' | 'leads' | 'agents' | 'whatsapp' | 'campaigns' | 'settings' | 'kanban' | 'messages' | 'agenda' | 'super_admin'>('dashboard');
   const [settingsSubTab, setSettingsSubTab] = useState<'credentials' | 'team'>('credentials');
-  const [loading, setLoading] = useState(false);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [team, setTeam] = useState<TeamMember[]>([]);
-  const [credentials, setCredentials] = useState<LLMCredential[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
-  
-  // WhatsApp & Real-time States
-  const [instances, setInstances] = useState<Instance[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
-  const [chatMessages, setChatMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState('');
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [credentials, setCredentials] = useState<LLMCredential[]>([]);
+  const [stats, setStats] = useState<any>(null);
   const [wsStatus, setWsStatus] = useState<WhatsAppStatus>({ status: 'none', qr: null });
-  const [msgFilter, setMsgFilter] = useState<'all' | 'contact' | 'group'>('all');
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [loading, setLoading] = useState(false);
 
   // Search State
   const [searchQuery, setSearchQuery] = useState('');
@@ -454,26 +424,7 @@ export default function App() {
   // Schedule Form State
   const [newSchedule, setNewSchedule] = useState({ name: '', agent_id: 0, member_id: 0, description: '' });
 
-  // formatDate helper
-
-  const formatDate = (dateStr: string) => {
-    if (!dateStr) return '';
-    try {
-      let normalized = dateStr;
-      if (normalized.includes(' ') && !normalized.includes('T')) {
-        normalized = normalized.replace(' ', 'T') + 'Z';
-      } else if (normalized.includes('T') && !normalized.includes('Z') && !normalized.includes('+')) {
-        normalized = normalized + 'Z';
-      }
-      const date = new Date(normalized);
-      if (isNaN(date.getTime())) return dateStr;
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch (e) {
-      return dateStr;
-    }
-  };
-
-  const API_URL = import.meta.env.VITE_API_URL || '';
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
   const apiFetch = async (url: string, options: any = {}) => {
     if (!auth) return null;
@@ -482,23 +433,12 @@ export default function App() {
       'x-account-id': auth.accountId.toString(),
       'Content-Type': 'application/json'
     };
-    // Ensure absolute URL if API_URL is provided, otherwise relative
-    const finalUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
-    const res = await fetch(finalUrl, { ...options, headers });
+    const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
       handleLogout();
       return null;
     }
-    
-    const contentType = res.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      return res.json();
-    }
-    
-    // Non-JSON response (likely an error page)
-    const text = await res.text();
-    console.error(`API Error (${res.status}): Non-JSON response from ${url}`, text.substring(0, 100));
-    return null;
+    return res.json();
   };
 
   const handleLogin = async () => {
@@ -572,47 +512,15 @@ export default function App() {
     if (data) setSchedules(data);
   };
 
-  const fetchInstances = async () => {
-    const data = await apiFetch('/api/whatsapp/instances');
-    if (data) setInstances(data);
+  const fetchStats = async () => {
+    const data = await apiFetch('/api/stats');
+    if (data) setStats(data);
   };
 
-  const fetchConversations = async () => {
-    const data = await apiFetch('/api/conversations');
-    if (data) setConversations(data);
+  const fetchWsStatus = async () => {
+    const data = await apiFetch('/api/whatsapp/status');
+    if (data) setWsStatus(data);
   };
-
-  const fetchChatMessages = async (convId: number) => {
-    const data = await apiFetch(`/api/conversations/${convId}/messages`);
-    if (data) setChatMessages(data);
-  };
-
-  // --- Routing & Navigation ---
-  useEffect(() => {
-    const handleHashChange = () => {
-      const hash = window.location.hash.replace('#', '') as any;
-      const validTabs = ['dashboard', 'search', 'leads', 'agents', 'whatsapp', 'campaigns', 'settings', 'kanban', 'messages', 'agenda', 'super_admin'];
-      if (validTabs.includes(hash)) {
-        setActiveTab(hash);
-      }
-    };
-
-    window.addEventListener('hashchange', handleHashChange);
-    // Initial check
-    if (window.location.hash) {
-      handleHashChange();
-    } else {
-      window.location.hash = activeTab;
-    }
-
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
-
-  useEffect(() => {
-    if (window.location.hash.replace('#', '') !== activeTab) {
-      window.location.hash = activeTab;
-    }
-  }, [activeTab]);
 
   useEffect(() => {
     if (auth) {
@@ -623,109 +531,30 @@ export default function App() {
       fetchCredentials();
       fetchMessages();
       fetchSchedules();
-      fetchInstances();
-      fetchConversations();
-
-      const newSocket = io(API_URL || window.location.origin, {
-        query: { accountId: auth.accountId }
-      });
-
-      newSocket.on("instance.status", ({ instanceId, status, phoneConnected }) => {
-        setInstances(prev => prev.map(inst => 
-          inst.id === instanceId ? { ...inst, status, phoneConnected, qr: status === 'open' ? null : inst.qr } : inst
-        ));
-        
-        // Update global wsStatus for sidebar/dashboard compatibility
-        if (status === 'open') {
-          setWsStatus({ status: 'open', qr: null });
-        }
-      });
-
-      newSocket.on("instance.qr", ({ instanceId, qr }) => {
-        setInstances(prev => prev.map(inst => 
-          inst.id === instanceId ? { ...inst, qr, status: 'qr' } : inst
-        ));
-        setWsStatus({ status: 'qr', qr });
-      });
-
-      newSocket.on("message.new", (data: any) => {
-        console.log('[FRONT_INBOUND_RENDER]', data);
-        const { conversationId, message, conversation } = data;
-        
-        // If the new message belongs to the active conversation, push it directly
-        if (conversationId && message) {
-          setChatMessages(prev => {
-            // Deduplicate by message_id
-            if (message.message_id && prev.some((m: any) => m.message_id === message.message_id)) {
-              return prev;
-            }
-            return [...prev, message];
-          });
-        }
-        
-        // Update conversations list
-        if (conversation) {
-          setConversations(prev => {
-            const exists = prev.find(c => c.id === conversationId);
-            if (exists) {
-              return prev.map(c => c.id === conversationId 
-                ? { ...c, last_message_preview: conversation.last_message_preview, last_message_at: new Date().toISOString() }
-                : c
-              ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
-            } else {
-              // New conversation
-              return [{ id: conversationId, ...conversation, last_message_at: new Date().toISOString(), unread_count: 1 } as any, ...prev];
-            }
-          });
-        } else {
-          // Fallback: refetch
-          fetchConversations();
-        }
-      });
-
-      newSocket.on("message.status", (data: any) => {
-        console.log('[FRONT_OUTBOUND_RENDER] status update:', data);
-        const { messageId, status } = data;
-        setChatMessages(prev => prev.map((m: any) => 
-          m.message_id === messageId ? { ...m, delivery_status: status } : m
-        ));
-      });
-
-      setSocket(newSocket);
-      return () => {
-        newSocket.close();
-      };
+      fetchStats();
+      const interval = setInterval(fetchWsStatus, 3000);
+      return () => clearInterval(interval);
     }
   }, [auth]);
-
-  useEffect(() => {
-    if (activeConversationId) {
-      fetchChatMessages(activeConversationId);
-    }
-  }, [activeConversationId]);
 
   const handleSearch = async () => {
     if (!searchQuery) return;
     setLoading(true);
     try {
-      const response = await apiFetch('/api/ai/generate', {
-        method: 'POST',
-        body: JSON.stringify({
-          model: "gemini-2.0-flash",
-          prompt: `Encontre 10 empresas do nicho "${searchQuery}" com nome, telefone e endereço. Retorne APENAS um array JSON de objetos com as chaves: name, phone, address.`,
-          config: {
-            tools: [{ googleMaps: {} }],
-          }
-        })
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Encontre 10 empresas do nicho "${searchQuery}" com nome, telefone e endereço. Retorne APENAS um array JSON de objetos com as chaves: name, phone, address.`,
+        config: {
+          tools: [{ googleMaps: {} }],
+        }
       });
 
-      if (response && response.text) {
-        const text = response.text;
-        const jsonMatch = text.match(/\[.*\]/s);
-        if (jsonMatch) {
-          const data = JSON.parse(jsonMatch[0]);
-          setSearchResults(data);
-        }
+      // Try to parse JSON from response
+      const text = response.text || '';
+      const jsonMatch = text.match(/\[.*\]/s);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[0]);
+        setSearchResults(data);
       }
     } catch (error) {
       console.error("Search error:", error);
@@ -768,195 +597,6 @@ export default function App() {
       handoff_trigger: 'Quero falar com um humano'
     });
     fetchAgents();
-  };
-
-  const createInstance = async (name: string, engine: 'baileys' | 'whatsmeow' = 'baileys') => {
-    await apiFetch('/api/whatsapp/instances', {
-      method: 'POST',
-      body: JSON.stringify({ name, engine })
-    });
-    fetchInstances();
-  };
-
-  const connectInstance = async (id: number) => {
-    await apiFetch(`/api/whatsapp/instances/${id}/connect`, { method: 'POST' });
-    setInstances(prev => prev.map(inst => inst.id === id ? { ...inst, status: 'connecting' } : inst));
-  };
-
-  const logoutInstance = async (id: number) => {
-    await apiFetch(`/api/whatsapp/instances/${id}/logout`, { method: 'POST' });
-    fetchInstances();
-  };
-
-  const deleteInstance = async (id: number) => {
-    await apiFetch(`/api/whatsapp/instances/${id}`, { method: 'DELETE' });
-    fetchInstances();
-  };
-
-  const sendMessage = async () => {
-    if (!activeConversationId || !newMessage.trim()) return;
-    const conv = conversations.find(c => c.id === activeConversationId);
-    if (!conv) {
-      console.warn("[SEND] Conversation not found", activeConversationId);
-      return;
-    }
-
-    // Get instanceId — fallback to first connected instance
-    const instanceId = conv.instance_id || instances.find(i => i.status === 'open')?.id;
-    if (!instanceId) {
-      alert("Erro: Nenhuma instância conectada.");
-      return;
-    }
-
-    // Build the target JID
-    let targetJid = conv.group_jid || conv.contact_phone || '';
-    if (targetJid && !targetJid.includes('@')) {
-      // Check if it looks like a phone number (starts with digits, 10-15 chars)
-      // or a LID (longer than 15 chars)
-      if (targetJid.length > 15) {
-        targetJid = `${targetJid}@lid`;
-      } else {
-        targetJid = `${targetJid}@s.whatsapp.net`;
-      }
-    }
-
-    console.log("[SEND_DEBUG]", { instanceId, targetJid, convInstanceId: conv.instance_id, contactPhone: conv.contact_phone });
-
-    if (!targetJid) {
-      alert("Erro: Destinatário inválido");
-      return;
-    }
-
-    const msgText = newMessage;
-    setNewMessage('');
-
-    // Optimistic render
-    const optimisticMsg: any = {
-      id: Date.now(),
-      message_id: `opt_${Date.now()}`,
-      conversation_id: activeConversationId,
-      direction: 'outbound',
-      content_type: 'text',
-      content_text: msgText,
-      delivery_status: 'pending',
-      from_me: true,
-      author_push_name: 'Eu',
-      created_at: new Date().toISOString()
-    };
-    setChatMessages(prev => [...prev, optimisticMsg]);
-
-    try {
-      const result = await apiFetch('/api/whatsapp/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          instanceId,
-          jid: targetJid,
-          message: msgText,
-          conversationId: activeConversationId
-        })
-      });
-
-      if (result?.providerMessageId) {
-        setChatMessages(prev => prev.map(m => 
-          m.message_id === optimisticMsg.message_id
-            ? { ...m, message_id: result.providerMessageId, delivery_status: 'sent' }
-            : m
-        ));
-      }
-    } catch (e: any) {
-      console.error("[SEND_ERROR]", e);
-      setChatMessages(prev => prev.map(m => 
-        m.message_id === optimisticMsg.message_id
-          ? { ...m, delivery_status: 'failed' }
-          : m
-      ));
-    }
-  };
-
-  const sendMediaMessage = async (url: string, type: 'image' | 'video' | 'audio' | 'document') => {
-    if (!activeConversationId) return;
-    const conv = conversations.find(c => c.id === activeConversationId);
-    if (!conv) return;
-    const instanceId = conv.instance_id || instances.find(i => i.status === 'open')?.id;
-    if (!instanceId) return;
-
-    let targetJid = conv.group_jid || conv.contact_phone || '';
-    if (targetJid && !targetJid.includes('@')) {
-      targetJid = targetJid.length > 15 ? `${targetJid}@lid` : `${targetJid}@s.whatsapp.net`;
-    }
-
-    const optimisticMsg: any = {
-      id: Date.now(),
-      message_id: `opt_media_${Date.now()}`,
-      conversation_id: activeConversationId,
-      direction: 'outbound',
-      content_type: type,
-      content_text: url,
-      delivery_status: 'pending',
-      from_me: true,
-      author_push_name: 'Eu',
-      created_at: new Date().toISOString()
-    };
-    setChatMessages(prev => [...prev, optimisticMsg]);
-
-    try {
-      const result = await apiFetch('/api/whatsapp/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          instanceId,
-          jid: targetJid,
-          message: '',
-          conversationId: activeConversationId,
-          mediaUrl: url,
-          contentType: type
-        })
-      });
-      if (result?.providerMessageId) {
-        setChatMessages(prev => prev.map(m => m.message_id === optimisticMsg.message_id ? { ...m, delivery_status: 'sent', message_id: result.providerMessageId } : m));
-      }
-    } catch (e) {
-      setChatMessages(prev => prev.map(m => m.message_id === optimisticMsg.message_id ? { ...m, delivery_status: 'failed' } : m));
-    }
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-      const response = await fetch(`${API_URL}/api/upload`, {
-        method: 'POST',
-        headers: { 'x-account-id': auth?.accountId?.toString() || '' },
-        body: formData
-      });
-      const data = await response.json();
-      if (data.url) {
-        const type = file.type.startsWith('image/') ? 'image' :
-                     file.type.startsWith('video/') ? 'video' :
-                     file.type.startsWith('audio/') ? 'audio' : 'document';
-        sendMediaMessage(data.url, type);
-      }
-    } catch (error) {
-      console.error('Upload failed:', error);
-      alert('Falha ao enviar arquivo');
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const deleteConversation = async (id: number) => {
-    if (!confirm("Tem certeza que deseja excluir esta conversa? Todas as mensagens serão perdidas.")) return;
-    await apiFetch(`/api/conversations/${id}`, { method: 'DELETE' });
-    if (activeConversationId === id) setActiveConversationId(null);
-    fetchConversations();
-  };
-
-  const deleteChatMessage = async (id: number) => {
-    if (!confirm("Excluir esta mensagem?")) return;
-    await apiFetch(`/api/messages/${id}`, { method: 'DELETE' });
-    if (activeConversationId) fetchChatMessages(activeConversationId);
   };
 
   const createCampaign = async () => {
@@ -1052,44 +692,33 @@ export default function App() {
     const agent = agents.find(a => a.id === agentId);
     if (!agent) return;
 
-    // Use the first connected instance
-    const activeInstance = instances.find(inst => inst.status === 'open');
-    if (!activeInstance) {
-      alert("Nenhuma instância conectada para realizar o disparo.");
-      return;
-    }
-
     setLoading(true);
     for (const lead of leads) {
       if (lead.status === 'pending' && lead.phone) {
         try {
-          const aiResponse = await apiFetch('/api/ai/generate', {
-            method: 'POST',
-            body: JSON.stringify({
-              model: "gemini-2.0-flash",
-              prompt: `Você é um assistente comercial com a seguinte instrução: "${agent.system_instruction}". Escreva uma mensagem curta e persuasiva para o cliente "${lead.name}" da empresa "${lead.address}". Não use placeholders, escreva a mensagem final.`
-            })
+          // 1. Generate message with AI
+          const aiResponse = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: `Você é um assistente comercial com a seguinte instrução: "${agent.system_instruction}". Escreva uma mensagem curta e persuasiva para o cliente "${lead.name}" da empresa "${lead.address}". Não use placeholders, escreva a mensagem final.`,
           });
 
-          if (aiResponse && aiResponse.text) {
-            const message = aiResponse.text;
-            const cleanPhone = lead.phone.replace(/\D/g, '');
-            const jid = `${cleanPhone}@s.whatsapp.net`;
+          const message = aiResponse.text;
 
-            await apiFetch('/api/whatsapp/send', {
-              method: 'POST',
-              body: JSON.stringify({ 
-                instanceId: activeInstance.id,
-                jid, 
-                message 
-              })
-            });
+          // 2. Send via WhatsApp
+          // Clean phone number (remove non-digits)
+          const cleanPhone = lead.phone.replace(/\D/g, '');
+          const jid = `${cleanPhone}@s.whatsapp.net`;
 
-            await apiFetch('/api/messages/save', {
-              method: 'POST',
-              body: JSON.stringify({ lead_id: lead.id, sender: 'ai', content: message })
-            });
-          }
+          await apiFetch('/api/whatsapp/send', {
+            method: 'POST',
+            body: JSON.stringify({ jid, message })
+          });
+
+          // 3. Save message to DB
+          await apiFetch('/api/messages/save', {
+            method: 'POST',
+            body: JSON.stringify({ lead_id: lead.id, sender: 'ai', content: message })
+          });
         } catch (e) {
           console.error("Broadcast error for lead", lead.name, e);
         }
@@ -1100,12 +729,9 @@ export default function App() {
     alert("Disparo concluído!");
   };
 
-  // Replaced with logoutInstance
   const logoutWhatsApp = async () => {
-    const activeInstance = instances.find(inst => inst.status === 'open');
-    if (activeInstance) {
-      await logoutInstance(activeInstance.id);
-    }
+    await apiFetch('/api/whatsapp/logout', { method: 'POST' });
+    fetchWsStatus();
   };
 
   if (!auth) {
@@ -1209,18 +835,18 @@ export default function App() {
         </div>
 
         <nav className="flex flex-col gap-2">
-          <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} href="#dashboard" />
-          <SidebarItem icon={MessagesSquare} label="Mensagens" active={activeTab === 'messages'} onClick={() => setActiveTab('messages')} href="#messages" />
-          <SidebarItem icon={Bot} label="Agentes IA" active={activeTab === 'agents'} onClick={() => setActiveTab('agents')} href="#agents" />
-          <SidebarItem icon={LayoutDashboard} label="Kanban" active={activeTab === 'kanban'} onClick={() => setActiveTab('kanban')} href="#kanban" />
-          <SidebarItem icon={Calendar} label="Agenda" active={activeTab === 'agenda'} onClick={() => setActiveTab('agenda')} href="#agenda" />
-          <SidebarItem icon={Search} label="Captar Leads" active={activeTab === 'search'} onClick={() => setActiveTab('search')} href="#search" />
-          <SidebarItem icon={Users} label="Meus Leads" active={activeTab === 'leads'} onClick={() => setActiveTab('leads')} href="#leads" />
-          <SidebarItem icon={MessageSquare} label="Campanhas" active={activeTab === 'campaigns'} onClick={() => setActiveTab('campaigns')} href="#campaigns" />
-          <SidebarItem icon={QrCode} label="Conexão WhatsApp" active={activeTab === 'whatsapp'} onClick={() => setActiveTab('whatsapp')} href="#whatsapp" />
-          <SidebarItem icon={Settings} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} href="#settings" />
+          <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+          <SidebarItem icon={MessagesSquare} label="Mensagens" active={activeTab === 'messages'} onClick={() => setActiveTab('messages')} />
+          <SidebarItem icon={Bot} label="Agentes IA" active={activeTab === 'agents'} onClick={() => setActiveTab('agents')} />
+          <SidebarItem icon={LayoutDashboard} label="Kanban" active={activeTab === 'kanban'} onClick={() => setActiveTab('kanban')} />
+          <SidebarItem icon={Calendar} label="Agenda" active={activeTab === 'agenda'} onClick={() => setActiveTab('agenda')} />
+          <SidebarItem icon={Search} label="Captar Leads" active={activeTab === 'search'} onClick={() => setActiveTab('search')} />
+          <SidebarItem icon={Users} label="Meus Leads" active={activeTab === 'leads'} onClick={() => setActiveTab('leads')} />
+          <SidebarItem icon={MessageSquare} label="Campanhas" active={activeTab === 'campaigns'} onClick={() => setActiveTab('campaigns')} />
+          <SidebarItem icon={QrCode} label="Conexão WhatsApp" active={activeTab === 'whatsapp'} onClick={() => setActiveTab('whatsapp')} />
+          <SidebarItem icon={Settings} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
           {auth.user.role === 'super_admin' && (
-            <SidebarItem icon={Lock} label="Super Admin" active={activeTab === 'super_admin'} onClick={() => setActiveTab('super_admin')} href="#super_admin" />
+            <SidebarItem icon={Lock} label="Super Admin" active={activeTab === 'super_admin'} onClick={() => setActiveTab('super_admin')} />
           )}
         </nav>
 
@@ -1265,75 +891,227 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               className="space-y-8"
             >
-              <header>
-                <h2 className="text-3xl font-bold text-slate-900">Bem-vindo ao Wasenderbr</h2>
-                <p className="text-slate-500 mt-1">Gerencie sua captação e automação de vendas.</p>
+              <header className="flex justify-between items-end">
+                <div>
+                  <h2 className="text-3xl font-bold text-slate-900">Dashboard de Desempenho</h2>
+                  <p className="text-slate-500 mt-1">Análise em tempo real da sua operação Wasenderbr.</p>
+                </div>
+                <button 
+                  onClick={fetchStats}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition-all"
+                >
+                  <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
+                  Atualizar Dados
+                </button>
               </header>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <Card className="p-6">
+              {/* Top Metrics */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <Card className="p-6 border-l-4 border-l-blue-500">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-500">Total de Leads</p>
-                      <h3 className="text-3xl font-bold mt-1">{leads.length}</h3>
+                      <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Total de Leads</p>
+                      <h3 className="text-3xl font-bold mt-1">{stats?.totalLeads || 0}</h3>
+                      <p className="text-xs text-slate-400 mt-2 flex items-center gap-1">
+                        <TrendingUp size={12} className="text-emerald-500" />
+                        Captados no Google Maps
+                      </p>
                     </div>
                     <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
                       <Users size={24} />
                     </div>
                   </div>
                 </Card>
-                <Card className="p-6">
+
+                <Card className="p-6 border-l-4 border-l-emerald-500">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-500">Agentes Ativos</p>
-                      <h3 className="text-3xl font-bold mt-1">{agents.length}</h3>
+                      <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Validação WhatsApp</p>
+                      <h3 className="text-3xl font-bold mt-1">{stats?.validationRate?.toFixed(1) || 0}%</h3>
+                      <p className="text-xs text-slate-400 mt-2">Taxa de números existentes</p>
                     </div>
-                    <div className="w-12 h-12 bg-purple-50 text-purple-600 rounded-xl flex items-center justify-center">
-                      <Bot size={24} />
+                    <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center">
+                      <CheckCircle size={24} />
                     </div>
                   </div>
                 </Card>
-                <Card className="p-6">
+
+                <Card className="p-6 border-l-4 border-l-purple-500">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-500">Status WhatsApp</p>
-                      <h3 className="text-xl font-bold mt-1 uppercase">{wsStatus.status === 'open' ? 'Conectado' : 'Desconectado'}</h3>
+                      <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Mensagens Enviadas</p>
+                      <h3 className="text-3xl font-bold mt-1">{stats?.messages?.total || 0}</h3>
+                      <p className="text-xs text-slate-400 mt-2">
+                        <span className="text-purple-600 font-bold">{stats?.messages?.ai || 0}</span> via IA
+                      </p>
                     </div>
-                    <div className={cn(
-                      "w-12 h-12 rounded-xl flex items-center justify-center",
-                      wsStatus.status === 'open' ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"
-                    )}>
-                      <MessageSquare size={24} />
+                    <div className="w-12 h-12 bg-purple-50 text-purple-600 rounded-xl flex items-center justify-center">
+                      <MessageCircle size={24} />
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="p-6 border-l-4 border-l-amber-500">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Taxa de Resposta</p>
+                      <h3 className="text-3xl font-bold mt-1">{stats?.responseRate?.toFixed(1) || 0}%</h3>
+                      <p className="text-xs text-slate-400 mt-2">Interação dos leads</p>
+                    </div>
+                    <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center">
+                      <BarChart3 size={24} />
                     </div>
                   </div>
                 </Card>
               </div>
 
-              <Card className="p-6">
-                <h3 className="text-lg font-bold mb-4">Últimos Leads Captados</h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="border-b border-slate-100 text-slate-400 text-xs font-semibold uppercase tracking-wider">
-                        <th className="pb-4 px-4">Nome</th>
-                        <th className="pb-4 px-4">Telefone</th>
-                        <th className="pb-4 px-4">Nicho</th>
-                        <th className="pb-4 px-4">Data</th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-sm">
-                      {leads.slice(0, 5).map((lead, i) => (
-                        <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
-                          <td className="py-4 px-4 font-medium">{lead.name}</td>
-                          <td className="py-4 px-4 text-slate-500 font-mono">{lead.phone}</td>
-                          <td className="py-4 px-4"><span className="px-2 py-1 bg-slate-100 rounded-lg text-xs">{lead.niche}</span></td>
-                          <td className="py-4 px-4 text-slate-400">Recente</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
+              {/* Charts Section */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Activity Chart */}
+                <Card className="p-6">
+                  <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                    <TrendingUp size={20} className="text-emerald-500" />
+                    Atividade Recente (Mensagens)
+                  </h3>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={stats?.activityByDay || []}>
+                        <defs>
+                          <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis 
+                          dataKey="date" 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fontSize: 12, fill: '#94a3b8' }}
+                          dy={10}
+                        />
+                        <YAxis 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fontSize: 12, fill: '#94a3b8' }}
+                        />
+                        <Tooltip 
+                          contentStyle={{ 
+                            backgroundColor: '#fff', 
+                            border: '1px solid #f1f5f9', 
+                            borderRadius: '12px',
+                            boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
+                          }}
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey="count" 
+                          stroke="#10b981" 
+                          strokeWidth={3}
+                          fillOpacity={1} 
+                          fill="url(#colorCount)" 
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
+
+                {/* Agent Performance Chart */}
+                <Card className="p-6">
+                  <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                    <Bot size={20} className="text-purple-500" />
+                    Desempenho por Agente IA
+                  </h3>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={stats?.agentPerformance || []} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                        <XAxis type="number" hide />
+                        <YAxis 
+                          dataKey="name" 
+                          type="category" 
+                          axisLine={false} 
+                          tickLine={false}
+                          tick={{ fontSize: 12, fill: '#475569', fontWeight: 500 }}
+                          width={100}
+                        />
+                        <Tooltip 
+                          cursor={{ fill: '#f8fafc' }}
+                          contentStyle={{ 
+                            backgroundColor: '#fff', 
+                            border: '1px solid #f1f5f9', 
+                            borderRadius: '12px'
+                          }}
+                        />
+                        <Bar 
+                          dataKey="message_count" 
+                          fill="#8b5cf6" 
+                          radius={[0, 4, 4, 0]} 
+                          barSize={20}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
+              </div>
+
+              {/* Distribution Section */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <Card className="p-6 lg:col-span-1">
+                  <h3 className="text-lg font-bold mb-6">Origem das Mensagens</h3>
+                  <div className="h-[250px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={[
+                            { name: 'IA', value: stats?.messages?.ai || 0 },
+                            { name: 'Humano', value: stats?.messages?.human || 0 },
+                            { name: 'Lead', value: stats?.messages?.lead || 0 }
+                          ]}
+                          innerRadius={60}
+                          outerRadius={80}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          <Cell fill="#8b5cf6" />
+                          <Cell fill="#3b82f6" />
+                          <Cell fill="#f59e0b" />
+                        </Pie>
+                        <Tooltip />
+                        <Legend verticalAlign="bottom" height={36}/>
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
+
+                <Card className="p-6 lg:col-span-2">
+                  <h3 className="text-lg font-bold mb-4">Resumo de Atendimento</h3>
+                  <div className="space-y-4">
+                    {stats?.agentPerformance?.map((agent: any, i: number) => (
+                      <div key={i} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center text-purple-600 shadow-sm">
+                            <Bot size={20} />
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-sm text-slate-800">{agent.name}</h4>
+                            <p className="text-xs text-slate-500">Agente de IA Ativo</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-bold text-slate-900">{agent.message_count} mensagens</p>
+                          <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Desempenho Estável</p>
+                        </div>
+                      </div>
+                    ))}
+                    {(!stats?.agentPerformance || stats.agentPerformance.length === 0) && (
+                      <div className="text-center py-8 text-slate-400 italic">
+                        Nenhum dado de agente disponível ainda.
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              </div>
             </motion.div>
           )}
 
@@ -1500,231 +1278,60 @@ export default function App() {
               key="messages"
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="h-[calc(100vh-160px)] flex border border-slate-200 rounded-3xl bg-white overflow-hidden shadow-sm"
+              className="space-y-6"
             >
-              {/* Conversations Sidebar */}
-              <div className="w-80 border-r border-slate-100 flex flex-col bg-slate-50/30">
-                <div className="p-4 border-b border-slate-100 bg-white space-y-3">
-                  <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
-                    <button 
-                      onClick={() => setMsgFilter('all')}
-                      className={cn(
-                        "flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all", 
-                        msgFilter === 'all' ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
-                      )}
-                    >TODOS</button>
-                    <button 
-                      onClick={() => setMsgFilter('contact')}
-                      className={cn(
-                        "flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all", 
-                        msgFilter === 'contact' ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
-                      )}
-                    >CONTATOS</button>
-                    <button 
-                      onClick={() => setMsgFilter('group')}
-                      className={cn(
-                        "flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all", 
-                        msgFilter === 'group' ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
-                      )}
-                    >GRUPOS</button>
-                  </div>
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                    <input 
-                      type="text" 
-                      placeholder="Buscar conversas..."
-                      className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:outline-none"
-                    />
-                  </div>
+              <header className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-3xl font-bold">Histórico de Mensagens</h2>
+                  <p className="text-slate-500">Acompanhe as interações entre seus agentes e leads.</p>
                 </div>
-                <div className="flex-1 overflow-y-auto">
-                  {conversations
-                    .filter(c => msgFilter === 'all' ? true : c.type === msgFilter)
-                    .map((conv) => (
-                    <div key={conv.id} className="group relative">
-                      <button
-                        onClick={() => setActiveConversationId(conv.id)}
-                        className={cn(
-                          "w-full p-4 flex gap-3 text-left transition-all hover:bg-white border-b border-slate-50",
-                          activeConversationId === conv.id ? "bg-white border-l-4 border-l-emerald-500" : "bg-transparent"
-                        )}
-                      >
-                        <div className="relative shrink-0">
-                          <div className={cn(
-                            "w-12 h-12 rounded-xl flex items-center justify-center font-bold",
-                            conv.type === 'group' ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"
-                          )}>
-                            {(conv.title || '').charAt(0)}
-                          </div>
-                          <div className="absolute -bottom-1 -right-1 bg-white p-1 rounded-full shadow-sm border border-slate-50">
-                            {conv.type === 'group' ? <Users size={12} /> : <User size={12} />}
-                          </div>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex justify-between items-start mb-0.5 pr-6">
-                            <h4 className="font-bold text-[14px] text-slate-900 truncate leading-tight">{conv.title}</h4>
-                            <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap ml-2">
-                              {formatDate(conv.last_message_at)}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500 truncate leading-relaxed">
-                            {conv.last_message || 'Inicie uma conversa'}
-                          </p>
-                        </div>
-                      </button>
-                      <button 
-                         onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                         className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ))}
-                  {conversations.length === 0 && (
-                    <div className="p-8 text-center text-slate-400 text-xs">
-                      Nenhuma conversa encontrada.
-                    </div>
-                  )}
-                </div>
-              </div>
+                <button 
+                  onClick={fetchMessages}
+                  className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
+                >
+                  <RefreshCw size={20} />
+                </button>
+              </header>
 
-              {/* Chat View */}
-              <div className="flex-1 flex flex-col bg-white">
-                {activeConversationId ? (
-                  <>
-                    {/* Chat Header */}
-                    <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center font-bold uppercase">
-                          {conversations.find(c => c.id === activeConversationId)?.title?.charAt(0) || '?'}
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-slate-900">
-                            {conversations.find(c => c.id === activeConversationId)?.title}
-                          </h3>
-                          <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-widest">Online</p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 text-slate-400">
-                        <button className="p-2 hover:bg-slate-50 rounded-lg transition-colors"><Smartphone size={20} /></button>
-                        <button className="p-2 hover:bg-slate-50 rounded-lg transition-colors"><Search size={20} /></button>
-                      </div>
+              <div className="grid grid-cols-1 gap-4">
+                {messages.length === 0 ? (
+                  <Card className="p-12 flex flex-col items-center justify-center text-center">
+                    <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-4">
+                      <MessagesSquare size={32} />
                     </div>
-
-                    {/* Chat Messages */}
-                    <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/20">
-                      {chatMessages.map((msg) => (
-                        <div 
-                          key={msg.id || msg.message_id} 
-                          className={cn(
-                            "flex flex-col max-w-[70%] group",
-                            msg.direction === 'outbound' ? "ml-auto items-end" : "items-start"
-                          )}
-                        >
-                          <div className="flex items-center gap-2 mb-1">
-                            {msg.chat_type === 'group' && msg.direction === 'inbound' && (
-                              <span className="text-[10px] text-slate-400 ml-1">{msg.author_push_name || msg.author_phone}</span>
-                            )}
-                            <button 
-                              onClick={() => deleteChatMessage(msg.id)}
-                              className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                          <div className={cn(
-                            "px-5 py-3 rounded-2xl text-[15px] shadow-sm leading-relaxed tracking-tight font-medium overflow-hidden",
-                            msg.direction === 'outbound' 
-                              ? msg.delivery_status === 'failed' 
-                                ? "bg-rose-500 text-white rounded-tr-none"
-                                : "bg-emerald-500 text-white rounded-tr-none"
-                              : "bg-white text-slate-900 border border-slate-100 rounded-tl-none"
-                          )}>
-                             {msg.content_type === 'image' ? (
-                               <img src={msg.content_text} alt="Imagem" className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity" onClick={() => window.open(msg.content_text, '_blank')} />
-                             ) : msg.content_type === 'audio' ? (
-                               <audio src={msg.content_text} controls className="max-w-[240px] h-10" />
-                             ) : msg.content_type === 'video' ? (
-                               <video src={msg.content_text} controls className="max-w-full rounded-lg" />
-                             ) : msg.content_type === 'document' ? (
-                               <a href={msg.content_text} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 underline decoration-emerald-200">
-                                 <Paperclip size={16} /> Ver Documento
-                               </a>
-                             ) : (
-                               msg.content_text || msg.content
-                             )}
-                          </div>
-                          <div className="flex items-center gap-1 mt-1">
-                            <span className="text-[10px] text-slate-400">
-                              {formatDate(msg.created_at)}
-                            </span>
-                            {msg.direction === 'outbound' && (
-                              <span className="text-[10px]">
-                                {msg.delivery_status === 'pending' && <span className="text-amber-400" title="Enviando...">⏳</span>}
-                                {msg.delivery_status === 'sent' && <span className="text-slate-400" title="Enviada">✓</span>}
-                                {msg.delivery_status === 'delivered' && <span className="text-slate-400" title="Entregue">✓✓</span>}
-                                {msg.delivery_status === 'read' && <span className="text-blue-500" title="Lida">✓✓</span>}
-                                {msg.delivery_status === 'failed' && (
-                                  <span className="text-rose-500 cursor-pointer" title="Falhou - clique para reenviar">❌</span>
-                                )}
-                                {!msg.delivery_status && <span className="text-slate-400">✓</span>}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                      {chatMessages.length === 0 && (
-                        <div className="flex flex-col items-center justify-center h-full text-center text-slate-400 gap-2">
-                           <MessageSquare size={32} />
-                           <p className="text-sm">Envie uma mensagem para começar.</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Chat Input */}
-                    <div className="p-4 border-t border-slate-100">
-                      <div className="flex gap-4">
-                        <input 
-                          type="file" 
-                          ref={fileInputRef} 
-                          className="hidden" 
-                          onChange={handleFileChange}
-                        />
-                        <button 
-                          onClick={() => fileInputRef.current?.click()}
-                          className="p-3 text-slate-400 hover:text-emerald-500 transition-colors"
-                        >
-                          <Paperclip size={20} />
-                        </button>
-                        <div className="flex-1 relative">
-                          <input 
-                            type="text" 
-                            className="w-full py-3 px-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:border-emerald-500 transition-all text-sm"
-                            placeholder="Digite sua mensagem..."
-                            value={newMessage}
-                            onChange={(e) => setNewMessage(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                          />
-                        </div>
-                        <button 
-                          onClick={sendMessage}
-                          disabled={!newMessage.trim()}
-                          className="p-3 bg-emerald-500 text-white rounded-2xl hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-100 disabled:opacity-50"
-                        >
-                          <Send size={20} />
-                        </button>
-                      </div>
-                    </div>
-                  </>
+                    <h3 className="text-lg font-bold text-slate-800">Nenhuma mensagem ainda</h3>
+                    <p className="text-slate-500 max-w-xs mt-2">As interações aparecerão aqui assim que você iniciar seus disparos ou campanhas.</p>
+                  </Card>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-center">
-                    <div className="w-20 h-20 bg-slate-50 text-slate-200 rounded-full flex items-center justify-center mb-6">
-                      <MessagesSquare size={40} />
-                    </div>
-                    <h3 className="text-xl font-bold text-slate-800">Selecione uma conversa</h3>
-                    <p className="text-slate-500 max-w-xs mt-2 mx-auto">
-                      Suas mensagens recebidas e enviadas aparecerão aqui em tempo real.
-                    </p>
+                  <div className="space-y-4">
+                    {messages.map((msg) => (
+                      <Card key={msg.id} className="p-4">
+                        <div className="flex items-start justify-between">
+                          <div className="flex gap-4">
+                            <div className={cn(
+                              "w-10 h-10 rounded-xl flex items-center justify-center font-bold shrink-0",
+                              msg.sender === 'ai' ? "bg-emerald-50 text-emerald-600" : 
+                              msg.sender === 'human' ? "bg-blue-50 text-blue-600" : "bg-slate-100 text-slate-600"
+                            )}>
+                              {msg.sender === 'ai' ? 'AI' : msg.sender === 'human' ? 'H' : 'L'}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-bold text-sm">{msg.lead_name}</h4>
+                                <span className="text-[10px] text-slate-400">•</span>
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                                  {msg.sender === 'ai' ? 'Agente IA' : msg.sender === 'human' ? 'Atendente' : 'Lead'}
+                                </span>
+                              </div>
+                              <p className="text-sm text-slate-700 mt-1 whitespace-pre-wrap">{msg.content}</p>
+                              <p className="text-[10px] text-slate-400 mt-2">
+                                {new Date(msg.created_at).toLocaleString('pt-BR')}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
                   </div>
                 )}
               </div>
@@ -2404,217 +2011,65 @@ export default function App() {
               key="whatsapp"
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="space-y-6"
+              className="max-w-2xl mx-auto space-y-8 text-center"
             >
-              <header className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-3xl font-bold">Conexões WhatsApp</h2>
-                  <p className="text-slate-500">Gerencie múltiplas instâncias e conexões.</p>
-                </div>
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => {
-                      const name = prompt("Nome da nova instância Woozapi 1.0 (Baileys):");
-                      if (name) createInstance(name, 'baileys');
-                    }}
-                    className="px-4 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-all flex items-center gap-2"
-                  >
-                    <Plus size={18} />
-                    Nova 1.0
-                  </button>
-                  <button 
-                    onClick={() => {
-                      const name = prompt("Nome da nova instância Woozapi 2.0 (Whatsmeow):");
-                      if (name) createInstance(name, 'whatsmeow');
-                    }}
-                    className="px-6 py-3 bg-emerald-500 text-white font-bold rounded-xl hover:bg-emerald-600 transition-all flex items-center gap-2 shadow-lg shadow-emerald-100 animate-pulse-subtle"
-                  >
-                    <Plus size={20} />
-                    Nova 2.0 (Premium)
-                  </button>
-                </div>
+              <header>
+                <h2 className="text-3xl font-bold">Conexão WhatsApp</h2>
+                <p className="text-slate-500">Escaneie o QR Code para conectar seu sistema ao WhatsApp.</p>
               </header>
 
-              <div className="space-y-12">
-                {/* Woozapi 1.0 - Baileys */}
-                <section>
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="w-1.5 h-6 bg-slate-300 rounded-full" />
-                    <h3 className="text-xl font-bold text-slate-400 uppercase tracking-widest">Woozapi 1.0 (Baileys)</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {instances.filter(i => !i.engine || i.engine === 'baileys').map((inst) => (
-                      <Card key={inst.id} className="p-6 flex flex-col border-t-4 border-t-slate-200">
-                        <div className="flex items-start justify-between mb-6">
-                          <div className={cn(
-                            "w-12 h-12 rounded-2xl flex items-center justify-center",
-                            inst.status === 'open' ? "bg-emerald-50 text-emerald-600" :
-                            inst.status === 'qr' ? "bg-amber-50 text-amber-600" : "bg-slate-50 text-slate-400"
-                          )}>
-                            {inst.status === 'open' ? <CheckCircle2 size={24} /> : <Smartphone size={24} />}
-                          </div>
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={() => deleteInstance(inst.id)}
-                              className="p-2 text-slate-300 hover:text-red-500 transition-colors"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="flex-1">
-                          <h4 className="text-xl font-bold mb-1">{inst.name}</h4>
-                          <div className="flex items-center gap-2 mb-4">
-                            <span className={cn(
-                              "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
-                              inst.status === 'open' ? "bg-emerald-100 text-emerald-700" :
-                              inst.status === 'qr' ? "bg-amber-100 text-amber-700" :
-                              inst.status === 'connecting' ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"
-                            )}>
-                              {inst.status === 'open' ? 'Conectado' : 
-                               inst.status === 'qr' ? 'Aguardando QR' :
-                               inst.status === 'connecting' ? 'Conectando...' : 
-                               inst.status === 'reconnecting' ? 'Reconectando...' : 'Desconectado'}
-                            </span>
-                            {inst.phoneConnected && (
-                              <span className="text-xs font-mono text-slate-400">+{inst.phoneConnected}</span>
-                            )}
-                          </div>
-
-                          {inst.status === 'qr' && inst.qr ? (
-                            <div className="mt-4 p-4 bg-white border-2 border-slate-100 rounded-2xl flex flex-col items-center gap-4">
-                               <img src={inst.qr} alt="QR Code" className="w-48 h-48" />
-                               <p className="text-[10px] text-slate-400 text-center px-4">
-                                 Escaneie com seu WhatsApp para conectar
-                               </p>
-                            </div>
-                          ) : inst.status === 'open' ? (
-                            <div className="mt-4 p-4 bg-emerald-50/50 rounded-xl border border-emerald-100">
-                              <p className="text-xs text-emerald-700 font-medium">Instância pronta para uso.</p>
-                            </div>
-                          ) : inst.status === 'none' || inst.status === 'close' ? (
-                            <button 
-                              onClick={() => connectInstance(inst.id)}
-                              className="mt-4 w-full py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all"
-                            >
-                              Gerar QR Code
-                            </button>
-                          ) : null}
-                        </div>
-
-                        {inst.status === 'open' && (
-                          <button 
-                            onClick={() => logoutInstance(inst.id)}
-                            className="mt-6 text-sm font-bold text-red-600 hover:underline"
-                          >
-                            Desconectar
-                          </button>
-                        )}
-                      </Card>
-                    ))}
-                    {instances.filter(i => !i.engine || i.engine === 'baileys').length === 0 && (
-                      <div className="col-span-full py-10 border-2 border-dashed border-slate-100 rounded-3xl text-center text-slate-400 text-xs">
-                        Nenhuma instância Woozapi 1.0 encontrada.
-                      </div>
-                    )}
-                  </div>
-                </section>
-
-                {/* Woozapi 2.0 - Whatsmeow */}
-                <section>
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="w-1.5 h-6 bg-emerald-500 rounded-full animate-pulse" />
-                    <h3 className="text-xl font-bold text-emerald-600 uppercase tracking-widest">Woozapi 2.0 (Whatsmeow)</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {instances.filter(i => i.engine === 'whatsmeow').map((inst) => (
-                      <Card key={inst.id} className="p-6 flex flex-col border-t-4 border-t-emerald-500 shadow-lg shadow-emerald-50">
-                        <div className="flex items-start justify-between mb-6">
-                          <div className={cn(
-                            "w-12 h-12 rounded-2xl flex items-center justify-center",
-                            inst.status === 'open' ? "bg-emerald-500 text-white" :
-                            inst.status === 'qr' ? "bg-amber-50 text-amber-600" : "bg-emerald-50 text-emerald-400"
-                          )}>
-                            {inst.status === 'open' ? <CheckCircle2 size={24} /> : <Smartphone size={24} />}
-                          </div>
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={() => deleteInstance(inst.id)}
-                              className="p-2 text-slate-300 hover:text-red-500 transition-colors"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="flex-1">
-                          <h4 className="text-xl font-bold mb-1">{inst.name}</h4>
-                          <div className="flex items-center gap-2 mb-4">
-                            <span className={cn(
-                              "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
-                              inst.status === 'open' ? "bg-emerald-500 text-white" :
-                              inst.status === 'qr' ? "bg-amber-100 text-amber-700" :
-                              inst.status === 'connecting' ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
-                            )}>
-                              {inst.status === 'open' ? 'Conectado (v2.0)' : 
-                               inst.status === 'qr' ? 'Aguardando QR' :
-                               inst.status === 'connecting' ? 'Conectando...' : 
-                               inst.status === 'reconnecting' ? 'Reconectando...' : 'Desconectado'}
-                            </span>
-                            {inst.phoneConnected && (
-                              <span className="text-xs font-mono text-emerald-600 font-bold">+{inst.phoneConnected}</span>
-                            )}
-                          </div>
-
-                          {inst.status === 'qr' && inst.qr ? (
-                            <div className="mt-4 p-4 bg-white border-2 border-emerald-100 rounded-2xl flex flex-col items-center gap-4">
-                               <img src={inst.qr} alt="QR Code" className="w-48 h-48" />
-                               <p className="text-[10px] text-emerald-600 font-bold text-center px-4">
-                                 Escaneie para conectar com Woozapi 2.0
-                               </p>
-                            </div>
-                          ) : inst.status === 'open' ? (
-                            <div className="mt-4 p-4 bg-emerald-500/10 rounded-xl border border-emerald-200">
-                              <p className="text-xs text-emerald-700 font-bold">Instância de alta estabilidade ativa.</p>
-                            </div>
-                          ) : inst.status === 'none' || inst.status === 'close' ? (
-                            <button 
-                              onClick={() => connectInstance(inst.id)}
-                              className="mt-4 w-full py-3 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 transition-all shadow-md shadow-emerald-200"
-                            >
-                              Gerar QR Code 2.0
-                            </button>
-                          ) : null}
-                        </div>
-
-                        {inst.status === 'open' && (
-                          <button 
-                            onClick={() => logoutInstance(inst.id)}
-                            className="mt-6 text-sm font-bold text-red-600 hover:underline"
-                          >
-                            Desconectar
-                          </button>
-                        )}
-                      </Card>
-                    ))}
-                    {instances.filter(i => i.engine === 'whatsmeow').length === 0 && (
-                      <div className="col-span-full py-10 border-2 border-dashed border-emerald-100 rounded-3xl text-center text-emerald-400 text-xs">
-                        Nenhuma instância Woozapi 2.0 (Whatsmeow) encontrada.
-                      </div>
-                    )}
-                  </div>
-                </section>
-
-                {instances.length === 0 && (
-                  <div className="col-span-full py-20 text-center">
-                    <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <QrCode size={32} />
+              <Card className="p-10 flex flex-col items-center justify-center gap-8">
+                {wsStatus.status === 'open' ? (
+                  <div className="space-y-6">
+                    <div className="w-24 h-24 bg-emerald-50 text-emerald-500 rounded-full flex items-center justify-center mx-auto">
+                      <CheckCircle2 size={48} />
                     </div>
-                    <h3 className="text-lg font-bold text-slate-800">Nenhuma instância</h3>
-                    <p className="text-slate-500 mt-2">Clique em "Nova 1.0" ou "Nova 2.0" para começar.</p>
+                    <div>
+                      <h3 className="text-2xl font-bold">WhatsApp Conectado!</h3>
+                      <p className="text-slate-500 mt-2">Seu sistema está pronto para realizar disparos.</p>
+                    </div>
+                    <button
+                      onClick={() => fetch('/api/whatsapp/logout', { method: 'POST' })}
+                      className="px-8 py-3 bg-red-50 text-red-600 font-bold rounded-xl hover:bg-red-100 transition-all"
+                    >
+                      Desconectar Conta
+                    </button>
+                  </div>
+                ) : wsStatus.qr ? (
+                  <div className="space-y-8">
+                    <div className="p-4 bg-white border-4 border-slate-100 rounded-3xl shadow-xl inline-block">
+                      <img src={wsStatus.qr} alt="QR Code" className="w-64 h-64" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-xl font-bold">Escaneie o QR Code</h3>
+                      <p className="text-slate-500 max-w-xs mx-auto">Abra o WhatsApp no seu celular, vá em Aparelhos Conectados e escaneie este código.</p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 text-amber-600 bg-amber-50 py-2 px-4 rounded-full text-sm font-medium">
+                      <RefreshCw size={16} className="animate-spin" />
+                      Aguardando conexão...
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-6 py-10">
+                    <RefreshCw className="animate-spin text-emerald-500 mx-auto" size={48} />
+                    <p className="text-slate-500">Iniciando servidor de conexão...</p>
                   </div>
                 )}
+              </Card>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
+                <div className="p-4 bg-white rounded-2xl border border-slate-100">
+                  <h5 className="font-bold text-sm mb-1">Passo 1</h5>
+                  <p className="text-xs text-slate-500">Abra o WhatsApp no seu smartphone.</p>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-slate-100">
+                  <h5 className="font-bold text-sm mb-1">Passo 2</h5>
+                  <p className="text-xs text-slate-500">Toque em Menu ou Configurações e selecione Aparelhos Conectados.</p>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-slate-100">
+                  <h5 className="font-bold text-sm mb-1">Passo 3</h5>
+                  <p className="text-xs text-slate-500">Aponte seu celular para esta tela para capturar o código.</p>
+                </div>
               </div>
             </motion.div>
           )}

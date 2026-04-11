@@ -6,17 +6,3 @@ coverage/
 *.log
 .env*
 !.env.example
-
-# WhatsApp Auth
-auth_info_baileys_*
-auth_sessions/
-
-# Databases
-*.db
-*.db-journal
-*.db.bak
-
-# Go Bridge binaries
-go-bridge/bridge
-go-bridge/bridge.exe
-go-bridge/bridge.db
